@@ -28,7 +28,7 @@ Common top-level columns include:
 
 ## Main content areas
 
-### 1. Baseline and demographic information
+### 1. Baseline and demographic information(病人基本信息)
 Examples of variables:
 - Dexcom
 - Age
@@ -43,7 +43,7 @@ What this section captures:
 - basic demographics
 - body size measurements
 
-### 2. Diabetes history and outpatient glucose treatment
+### 2. Diabetes history and outpatient glucose treatment(糖尿病病史)
 Examples of variables:
 - History of DM?
 - DM type
@@ -59,7 +59,7 @@ What this section captures:
 - chronic antihyperglycemic therapy before admission
 - pre-admission insulin exposure
 
-### 3. Past medical history and comorbidities
+### 3. Past medical history and comorbidities(其他病史)
 Examples of variables:
 - History of tobacco use
 - History of COPD?
@@ -72,7 +72,7 @@ What this section captures:
 - major chronic medical conditions
 - potential factors for inpatient glucose control and CGM performance
 
-### 4. Admission and ICU context
+### 4. Admission and ICU context(入院信息)
 Examples of variables:
 - Admit Diagnosis
 - Admitting Service
@@ -86,7 +86,7 @@ What this section captures:
 - ICU setting
 - severity of illness context
 
-### 5. Kidney function and dialysis
+### 5. Kidney function and dialysis(肾功能和透析情况)
 Examples of variables:
 - Admission eGFR
 - Admission creatinine
@@ -99,7 +99,7 @@ What this section captures:
 - renal injury severity
 - dialysis exposure, which may influence CGM accuracy and glucose management
 
-### 6. Clinical status at CGM placement
+### 6. Clinical status at CGM placement(CGM临床情况)
 Examples of variables:
 - intubation status at CGM placement
 - oxygen support
@@ -109,7 +109,7 @@ Examples of variables:
 What this section captures:
 - physiologic condition at the time of sensor insertion
 
-### 7. Sensor placement and removal tracking
+### 7. Sensor placement and removal tracking(传感器情况)
 Examples of variables:
 - Date/time of sensor  insertion?
 - Sensor duration (days)
@@ -125,9 +125,9 @@ What this section captures:
 - whether removal was early
 
 
-## Repeated daily instruments
+## Repeated daily instruments(每日重复记录表单)
 
-### A. Daily Clinical Condition and Use
+### A. Daily Clinical Condition and Use(每日临床情况)
 Examples of variables:
 - Date
 - dialysis status/type
@@ -150,7 +150,7 @@ What this section captures:
 - nutrition support exposure
 - sensor site safety events
 
-### B. Daily Medications
+### B. Daily Medications(每日用药记录)
 Examples of variables:
 - Date
 - pressor support status
@@ -167,7 +167,7 @@ What this section captures:
 - steroid exposure
 - medication-related factors that may alter glucose patterns or CGM performance
 
-### C. Daily Insulin Dosing
+### C. Daily Insulin Dosing(每日胰岛素剂量记录)
 Examples of variables:
 - Date
 - IV insulin status
@@ -182,7 +182,7 @@ What this section captures:
 - daily inpatient insulin 
 - route and intensity of insulin therapy
 
-### D. Daily Hospital Labs
+### D. Daily Hospital Labs(实验室记录)
 Examples of variables:
 - Date
 - Creatinine (mg/dl)
@@ -210,7 +210,7 @@ What this section captures:
 - metabolic acidosis/ketosis-related measurements
 - daily physiologic context for glucose instability
 
-### E. Daily Protocol Fidelity and Safety
+### E. Daily Protocol Fidelity and Safety(每日方案执行情况与安全性)
 Examples of variables:
 - initial validation fields
 - first and second CGM/POC paired values
@@ -227,7 +227,7 @@ What this section captures:
 - clinical events that require renewed caution or revalidation
 - summarized daily glycemic performance from Clarity
 
-### F. Daily Ongoing CGM/POC Pairs
+### F. Daily Ongoing CGM/POC Pairs(CGM/POC配对记录)
 Examples of variables:
 - Date
 - ongoing CGM value and timestamp
