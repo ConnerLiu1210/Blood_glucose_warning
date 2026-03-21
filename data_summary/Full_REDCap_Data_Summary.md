@@ -358,17 +358,25 @@ Interpretation:
 - Renal function, inflammation/infection-related markers, and acid-base status are relatively well represented.
 - Other markers such as CRP, D-dimer, and BHB are less consistently available.
 
-## 10. CGM and POC validation
-### Ongoing CGM/POC pairs
-- Total records: 3940
+## Ongoing CGM/POC pairs used for modeling
+
+### Source module
+- `Repeat Instrument = Daily Ongoing CGM/POC Pairs`
+
+### Overall available records
+- Total ongoing CGM/POC pair records: 3940
 - Paired within 5 minutes: 2043
 - Ongoing validation criteria met: 2386
 
-### Conditions near paired measurements
-- Low oxygen events were present
-- MAP(平均动脉压) < 65 also occurred in a meaningful number of paired records(灌注差,血糖数据偏差大，CGM和POC一致性受影响）
+### Final selected records
+For this project, only records satisfying both of the following conditions were retained:
+- `Were ongoing CGM/POC value within 5 minutes?` = Yes
+- `Was ongoing validation criteria met?` = Yes
 
-Interpretation:
-- The dataset contains a large number of CGM/POC paired records.
-- Some pairs occurred during low-oxygen or low-perfusion states
+This resulted in:
+- Final validated ongoing CGM/POC pairs: 1194
 
+
+### Interpretation
+- The original dataset contains a large number of ongoing CGM/POC paired records.
+- After restricting to records with both successful time matching and successful ongoing validation, 1194 high-quality pairs remained for analysis.
