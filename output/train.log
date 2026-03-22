@@ -1,0 +1,42 @@
+Training log
+Loading Excel files...
+Loaded successfully.
+Cleaned Master Clarity shape: (119325, 19)
+High count: 1082
+Validated CGM/POC pairs shape: (1194, 284)
+Timestamp-ready validated pairs shape: (1193, 288)
+Clean pair glucose values shape: (1192, 288)
+CGM range: 54.0 to 376.0
+POC range: 59.0 to 374.0
+Building transformer sequences...
+Transformer sequence shape: (117025, 36, 2)
+Transformer label shape: (117025,)
+Label counts: {np.int64(0): np.int64(116741), np.int64(1): np.int64(284)}
+Training on device: cuda
+Epoch 1/5, Loss: 0.3245
+Epoch 2/5, Loss: 0.3077
+Epoch 3/5, Loss: 0.3090
+Epoch 4/5, Loss: 0.3023
+Epoch 5/5, Loss: 0.3063
+
+===== TRANSFORMER RESULTS =====
+Confusion Matrix:
+[[22606   742]
+ [   35    22]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     0.9985    0.9682    0.9831     23348
+           1     0.0288    0.3860    0.0536        57
+
+    accuracy                         0.9668     23405
+   macro avg     0.5136    0.6771    0.5183     23405
+weighted avg     0.9961    0.9668    0.9808     23405
+
+
+Additional Metrics:
+Sensitivity (Recall): 0.3860
+Specificity: 0.9682
+AUROC: 0.8926
+AUPRC: 0.0296
