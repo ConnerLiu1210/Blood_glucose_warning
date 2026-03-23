@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from datetime import datetime
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -18,8 +19,12 @@ DATA_DIR = Path("data")
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-LOG_PATH = OUTPUT_DIR / "train.log"
-METRICS_PATH = OUTPUT_DIR / "metrics.txt"
+RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+RUN_DIR = OUTPUT_DIR / RUN_ID
+RUN_DIR.mkdir(exist_ok=True)
+
+LOG_PATH = RUN_DIR / "train.log"
+METRICS_PATH = RUN_DIR / "metrics.txt"
 
 FULL_REDCAP_PATH = DATA_DIR / "Full REDCap Data Intervention for Dexcom FINAL.xlsx"
 MASTER_CLARITY_PATH = DATA_DIR / "Master Clarity log 1-101 for Dexcom FINAL.xlsx"
@@ -211,16 +216,49 @@ def build_transformer_sequences(clarity_clean, seq_len=36):
                 glucose_seq = glucose_seq[-seq_len:]
                 time_seq = time_seq.iloc[-seq_len:]
 
+            # fixed-length feature arrays
             padded_seq = np.zeros(seq_len, dtype=np.float32)
             time_gap = np.zeros(seq_len, dtype=np.float32)
+            glucose_delta = np.zeros(seq_len, dtype=np.float32)
+            glucose_slope = np.zeros(seq_len, dtype=np.float32)
+            rolling_mean = np.zeros(seq_len, dtype=np.float32)
+            rolling_std = np.zeros(seq_len, dtype=np.float32)
 
-            padded_seq[-len(glucose_seq):] = glucose_seq
+            # fill glucose
+            padded_seq[-len(glucose_seq):] = glucose_seq.astype(np.float32)
 
+            # time gaps in minutes
             if len(time_seq) > 1:
                 deltas = time_seq.diff().dt.total_seconds().fillna(0).values / 60.0
-                time_gap[-len(glucose_seq):] = deltas.astype(np.float32)
+            else:
+                deltas = np.zeros(len(glucose_seq), dtype=np.float32)
 
-            seq_features = np.stack([padded_seq, time_gap], axis=1)
+            time_gap[-len(glucose_seq):] = np.array(deltas, dtype=np.float32)
+
+            # glucose delta
+            g_delta = np.diff(glucose_seq, prepend=glucose_seq[0]).astype(np.float32)
+            glucose_delta[-len(glucose_seq):] = g_delta
+
+            # glucose slope = delta / time_gap
+            safe_gap = np.array(deltas, dtype=np.float32)
+            safe_gap[safe_gap == 0] = 1.0
+            g_slope = g_delta / safe_gap
+            glucose_slope[-len(glucose_seq):] = g_slope.astype(np.float32)
+
+            # rolling mean and rolling std (window = last 3 points)
+            g_series = pd.Series(glucose_seq)
+            r_mean = g_series.rolling(window=3, min_periods=1).mean().values.astype(np.float32)
+            r_std = g_series.rolling(window=3, min_periods=1).std().fillna(0).values.astype(np.float32)
+
+            rolling_mean[-len(glucose_seq):] = r_mean
+            rolling_std[-len(glucose_seq):] = r_std
+
+            # final feature matrix
+            seq_features = np.stack(
+                [padded_seq, time_gap, glucose_delta, glucose_slope, rolling_mean, rolling_std],
+                axis=1
+            )
+
 
             sequences.append(seq_features)
             labels.append(int(future_high))
@@ -254,7 +292,7 @@ class GlucoseDataset(Dataset):
 class GlucoseTransformer(nn.Module):
     def __init__(
         self,
-        input_dim=2,
+        input_dim=6,
         d_model=32,
         nhead=4,
         num_layers=2,
