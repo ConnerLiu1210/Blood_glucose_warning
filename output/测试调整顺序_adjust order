@@ -4,4 +4,4 @@
 4. add nutrition (enteral, tpn)
 5. divided by patients
 6. adjust threshold ----> 阈值0.8：没有漏报但是很多虚报； 阈值0.9：只有很有把握才会报警，虚报很少，但是只抓到一半的正例
-7. add glucose std mean slope delta
+7. add glucose std mean slope delta (阈值0.9更加接近实际情况，所以采取0.9的阈值，添加动态特征）
