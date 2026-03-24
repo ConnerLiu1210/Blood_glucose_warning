@@ -1,0 +1,19 @@
+===== TRANSFORMER RESULTS =====
+Confusion Matrix:
+[[22962   386]
+ [    6    51]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     0.9997    0.9835    0.9915     23348
+           1     0.1167    0.8947    0.2065        57
+
+    accuracy                         0.9833     23405
+   macro avg     0.5582    0.9391    0.5990     23405
+weighted avg     0.9976    0.9833    0.9896     23405
+
+Sensitivity (Recall): 0.8947
+Specificity: 0.9835
+AUROC: 0.9891
+AUPRC: 0.2573

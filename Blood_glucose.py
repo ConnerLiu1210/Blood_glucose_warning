@@ -1,11 +1,12 @@
 from pathlib import Path
+from datetime import datetime
+import random
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from datetime import datetime
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
@@ -14,7 +15,7 @@ from sklearn.metrics import (
 )
 
 
-# File paths
+# Paths
 DATA_DIR = Path("data")
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -31,14 +32,48 @@ MASTER_CLARITY_PATH = DATA_DIR / "Master Clarity log 1-101 for Dexcom FINAL.xlsx
 SECONDARY_CGM_PATH = DATA_DIR / "Final Seconary CGM cohort pull_uncleaned.xlsx"
 
 
-# Logging helper
-def log_message(message, log_path=LOG_PATH):
+# Helpers
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def log_message(message):
     print(message)
-    with open(log_path, "a", encoding="utf-8") as f:
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(str(message) + "\n")
 
 
-# Load Excel files
+def yes_no_to_flag(series):
+    s = series.astype(str).str.strip().str.lower()
+    return s.isin(["yes", "y", "true", "1"]).astype(np.float32)
+
+
+def safe_numeric(series):
+    return pd.to_numeric(series, errors="coerce").fillna(0).astype(np.float32)
+
+
+def make_unique_columns(columns):
+    seen = {}
+    new_cols = []
+    for col in columns:
+        col = str(col).strip()
+        if col not in seen:
+            seen[col] = 0
+            new_cols.append(col)
+        else:
+            seen[col] += 1
+            new_cols.append(f"{col}__dup{seen[col]}")
+    return new_cols
+
+
+# Load data
 def load_excel_files():
     log_message("Loading Excel files...")
 
@@ -46,25 +81,31 @@ def load_excel_files():
     master_clarity = pd.read_excel(MASTER_CLARITY_PATH)
     secondary_cgm = pd.read_excel(SECONDARY_CGM_PATH, sheet_name=None)
 
-    full_redcap.columns = full_redcap.columns.str.strip()
-    master_clarity.columns = master_clarity.columns.str.strip()
+    full_redcap.columns = make_unique_columns(full_redcap.columns)
+    master_clarity.columns = make_unique_columns(master_clarity.columns)
 
     log_message("Loaded successfully.")
     return full_redcap, master_clarity, secondary_cgm
 
 
-# Clean Master Clarity
+# Clean CGM
 def clean_master_clarity(master_clarity):
     df = master_clarity.copy()
 
+    timestamp_col = None
     for col in df.columns:
         if "imes" in str(col):
-            df = df.rename(columns={col: "Timestamp"})
+            timestamp_col = col
             break
 
+    if timestamp_col is None:
+        raise ValueError("Could not find timestamp column in Master Clarity.")
+
+    df = df.rename(columns={timestamp_col: "Timestamp"})
+
     df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
-    df = df[df["Sub ID"].notna()].copy()
-    df = df[df["Timestamp"].notna()].copy()
+    df = df[df["Sub ID"].notna() & df["Timestamp"].notna()].copy()
+    df["Sub ID"] = df["Sub ID"].astype(str).str.strip()
 
     df["Glucose_raw"] = df["Glucose Value (mg/dL)"].astype(str).str.strip()
     df["Glucose_text_upper"] = df["Glucose_raw"].str.upper()
@@ -79,101 +120,144 @@ def clean_master_clarity(master_clarity):
 
     log_message(f"Cleaned Master Clarity shape: {df.shape}")
     log_message(f"High count: {df['Is_High'].sum()}")
-
     return df
 
 
-# Filter validated ongoing CGM/POC pairs from Full REDCap
-def filter_validated_pairs(full_redcap):
-    df = full_redcap.copy()
+# Clean insulin
+def clean_daily_insulin(full_redcap):
+    df = full_redcap[full_redcap["Repeat Instrument"] == "Daily Insulin Dosing"].copy()
 
-    df = df[df["Repeat Instrument"] == "Daily Ongoing CGM/POC Pairs"].copy()
+    if df.empty:
+        log_message("No Daily Insulin Dosing rows found.")
+        return pd.DataFrame(columns=[
+            "Study_ID", "Daily_Date",
+            "iv_insulin_flag", "sc_insulin_flag",
+            "subq_bolus_units", "basal_insulin_units", "nph_units"
+        ])
 
-    time_match_col = "Were ongoing CGM/POC value within 5 minutes?"
-    validation_col = "Was ongoing validation criteria met?"
+    df["Study_ID"] = df["Unique Study ID"].astype(str).str.strip()
+    df["Daily_Date"] = pd.to_datetime(df["Date .1"], errors="coerce").dt.date
 
-    df[time_match_col] = df[time_match_col].astype(str).str.strip()
-    df[validation_col] = df[validation_col].astype(str).str.strip()
+    df["iv_insulin_flag"] = yes_no_to_flag(df["Is the patient on IV insulin"])
+    df["sc_insulin_flag"] = yes_no_to_flag(df["Is the patient on subQ insulin"])
+    df["subq_bolus_units"] = safe_numeric(df["Total number of units of SubQ bolus insulin received"])
+    df["basal_insulin_units"] = safe_numeric(df["Total number of units in basal insulin dose"])
+    df["nph_units"] = safe_numeric(df["How many daily units of NPH insulin is patient receiving"])
 
-    df = df[
-        (df[time_match_col] == "Yes") &
-        (df[validation_col] == "Yes")
-    ].copy()
+    df = df[[
+        "Study_ID", "Daily_Date",
+        "iv_insulin_flag", "sc_insulin_flag",
+        "subq_bolus_units", "basal_insulin_units", "nph_units"
+    ]].dropna(subset=["Study_ID", "Daily_Date"])
 
-    df = df.rename(columns={
-        "Unique Study ID": "Study_ID",
-        "Date .4": "Pair_Date",
-        "Ongoing CGM value": "CGM_value",
-        "Time of ongoing CGM value": "CGM_time",
-        "Ongoing POC value": "POC_value",
-        "Time of ongoing POC value": "POC_time",
+    df = df.groupby(["Study_ID", "Daily_Date"], as_index=False).agg({
+        "iv_insulin_flag": "max",
+        "sc_insulin_flag": "max",
+        "subq_bolus_units": "sum",
+        "basal_insulin_units": "sum",
+        "nph_units": "sum",
     })
 
-    log_message(f"Validated CGM/POC pairs shape: {df.shape}")
+    log_message(f"Cleaned Daily Insulin Dosing shape: {df.shape}")
     return df
 
 
-# Build usable timestamps for validated CGM/POC pairs
-def build_pair_timestamps(validated_pairs):
-    df = validated_pairs.copy()
+# Clean nutrition
+def clean_daily_nutrition(full_redcap):
+    df = full_redcap[full_redcap["Repeat Instrument"] == "Daily Clinical Condition and Use"].copy()
 
-    df["Pair_Date"] = pd.to_datetime(df["Pair_Date"], errors="coerce").dt.date
-    df["CGM_time"] = pd.to_datetime(df["CGM_time"], errors="coerce").dt.time
-    df["POC_time"] = pd.to_datetime(df["POC_time"], errors="coerce").dt.time
+    if df.empty:
+        log_message("No Daily Clinical Condition and Use rows found.")
+        return pd.DataFrame(columns=[
+            "Study_ID", "Daily_Date",
+            "enteral_nutrition_flag", "enteral_feed_duration",
+            "tpn_flag", "tpn_duration"
+        ])
 
-    df["CGM_timestamp"] = pd.to_datetime(
-        df["Pair_Date"].astype(str) + " " + df["CGM_time"].astype(str),
-        errors="coerce"
-    )
-    df["POC_timestamp"] = pd.to_datetime(
-        df["Pair_Date"].astype(str) + " " + df["POC_time"].astype(str),
-        errors="coerce"
-    )
+    df["Study_ID"] = df["Unique Study ID"].astype(str).str.strip()
 
-    df["CGM_value"] = pd.to_numeric(df["CGM_value"], errors="coerce")
-    df["POC_value"] = pd.to_numeric(df["POC_value"], errors="coerce")
+    if "Date" not in df.columns:
+        raise ValueError("Could not find nutrition date column 'Date'.")
 
-    df = df[df["CGM_timestamp"].notna()].copy()
-    df = df[df["POC_timestamp"].notna()].copy()
-    df = df[df["CGM_value"].notna()].copy()
-    df = df[df["POC_value"].notna()].copy()
+    df["Daily_Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
 
-    df["CGM_POC_diff"] = df["CGM_value"] - df["POC_value"]
-    df["CGM_POC_abs_diff"] = (df["CGM_value"] - df["POC_value"]).abs()
+    df["enteral_nutrition_flag"] = yes_no_to_flag(df["Was the patient receiving enteral nutrition"])
+    df["enteral_feed_duration"] = safe_numeric(df["Duration of enteral feed"])
+    df["tpn_flag"] = yes_no_to_flag(df["Was the patient receiving parenteral nutrition (TPN)?"])
+    df["tpn_duration"] = safe_numeric(df["Duration of TPN"])
 
-    log_message(f"Timestamp-ready validated pairs shape: {df.shape}")
+    df = df[[
+        "Study_ID", "Daily_Date",
+        "enteral_nutrition_flag", "enteral_feed_duration",
+        "tpn_flag", "tpn_duration"
+    ]].dropna(subset=["Study_ID", "Daily_Date"])
+
+    df = df.groupby(["Study_ID", "Daily_Date"], as_index=False).agg({
+        "enteral_nutrition_flag": "max",
+        "enteral_feed_duration": "max",
+        "tpn_flag": "max",
+        "tpn_duration": "max",
+    })
+
+    log_message(f"Cleaned Daily Nutrition shape: {df.shape}")
     return df
 
 
-# Clean validated pair glucose values
-def clean_pair_glucose_values(validated_pairs_ready):
-    df = validated_pairs_ready.copy()
+# Lookup daily features
+def get_insulin_features(daily_insulin_clean, subject_id, current_time):
+    current_date = current_time.date()
+    df = daily_insulin_clean[
+        (daily_insulin_clean["Study_ID"] == str(subject_id).strip()) &
+        (daily_insulin_clean["Daily_Date"] == current_date)
+    ]
 
-    df = df[
-        (df["CGM_value"] >= 20) & (df["CGM_value"] <= 500) &
-        (df["POC_value"] >= 20) & (df["POC_value"] <= 500)
-    ].copy()
+    if df.empty:
+        return [0.0, 0.0, 0.0, 0.0, 0.0]
 
-    df["CGM_POC_diff"] = df["CGM_value"] - df["POC_value"]
-    df["CGM_POC_abs_diff"] = (df["CGM_value"] - df["POC_value"]).abs()
-
-    log_message(f"Clean pair glucose values shape: {df.shape}")
-    log_message(f"CGM range: {df['CGM_value'].min()} to {df['CGM_value'].max()}")
-    log_message(f"POC range: {df['POC_value'].min()} to {df['POC_value'].max()}")
-
-    return df
+    row = df.iloc[0]
+    return [
+        float(row["iv_insulin_flag"]),
+        float(row["sc_insulin_flag"]),
+        float(row["subq_bolus_units"]),
+        float(row["basal_insulin_units"]),
+        float(row["nph_units"]),
+    ]
 
 
-# Build transformer input sequences
-def build_transformer_sequences(clarity_clean, seq_len=36):
+def get_nutrition_features(daily_nutrition_clean, subject_id, current_time):
+    current_date = current_time.date()
+    df = daily_nutrition_clean[
+        (daily_nutrition_clean["Study_ID"] == str(subject_id).strip()) &
+        (daily_nutrition_clean["Daily_Date"] == current_date)
+    ]
+
+    if df.empty:
+        return [0.0, 0.0, 0.0, 0.0]
+
+    row = df.iloc[0]
+    return [
+        float(row["enteral_nutrition_flag"]),
+        float(row["enteral_feed_duration"]),
+        float(row["tpn_flag"]),
+        float(row["tpn_duration"]),
+    ]
+
+
+# Build sequences
+def build_transformer_sequences(
+    clarity_clean,
+    daily_insulin_clean,
+    daily_nutrition_clean,
+    seq_len=36
+):
     log_message("Building transformer sequences...")
 
-    df = clarity_clean.copy()
-    df = df[df["Event Type"] == "EGV"].copy()
+    df = clarity_clean[clarity_clean["Event Type"] == "EGV"].copy()
     df = df.sort_values(["Sub ID", "Timestamp"]).reset_index(drop=True)
 
     sequences = []
     labels = []
+    subject_ids = []
 
     history_window = pd.Timedelta(hours=3)
     future_window = pd.Timedelta(hours=1)
@@ -218,6 +302,11 @@ def build_transformer_sequences(clarity_clean, seq_len=36):
             padded_seq = np.zeros(seq_len, dtype=np.float32)
             time_gap = np.zeros(seq_len, dtype=np.float32)
 
+            glucose_delta = np.zeros(seq_len, dtype=np.float32)
+            glucose_slope = np.zeros(seq_len, dtype=np.float32)
+            rolling_mean = np.zeros(seq_len, dtype=np.float32)
+            rolling_std = np.zeros(seq_len, dtype=np.float32)
+
             padded_seq[-len(glucose_seq):] = glucose_seq.astype(np.float32)
 
             if len(time_seq) > 1:
@@ -225,23 +314,73 @@ def build_transformer_sequences(clarity_clean, seq_len=36):
             else:
                 deltas = np.zeros(len(glucose_seq), dtype=np.float32)
 
-            time_gap[-len(glucose_seq):] = np.array(deltas, dtype=np.float32)
+            deltas = np.array(deltas, dtype=np.float32)
+            time_gap[-len(glucose_seq):] = deltas
 
-            seq_features = np.stack([padded_seq, time_gap], axis=1)
+            g_delta = np.diff(glucose_seq, prepend=glucose_seq[0]).astype(np.float32)
+            glucose_delta[-len(glucose_seq):] = g_delta
+
+            safe_gap = deltas.copy()
+            safe_gap[safe_gap == 0] = 1.0
+            g_slope = (g_delta / safe_gap).astype(np.float32)
+            glucose_slope[-len(glucose_seq):] = g_slope
+
+            g_series = pd.Series(glucose_seq)
+            r_mean = g_series.rolling(window=3, min_periods=1).mean().values.astype(np.float32)
+            r_std = (
+                g_series.rolling(window=3, min_periods=1)
+                .std()
+                .fillna(0)
+                .values
+                .astype(np.float32)
+            )
+
+            rolling_mean[-len(glucose_seq):] = r_mean
+            rolling_std[-len(glucose_seq):] = r_std
+
+            insulin = get_insulin_features(daily_insulin_clean, subject_id, current_time)
+            nutrition = get_nutrition_features(daily_nutrition_clean, subject_id, current_time)
+
+            fixed_features = [
+                np.full(seq_len, insulin[0], dtype=np.float32),
+                np.full(seq_len, insulin[1], dtype=np.float32),
+                np.full(seq_len, insulin[2], dtype=np.float32),
+                np.full(seq_len, insulin[3], dtype=np.float32),
+                np.full(seq_len, insulin[4], dtype=np.float32),
+                np.full(seq_len, nutrition[0], dtype=np.float32),
+                np.full(seq_len, nutrition[1], dtype=np.float32),
+                np.full(seq_len, nutrition[2], dtype=np.float32),
+                np.full(seq_len, nutrition[3], dtype=np.float32),
+            ]
+
+            seq_features = np.stack(
+                [
+                    padded_seq,
+                    time_gap,
+                    glucose_delta,
+                    glucose_slope,
+                    rolling_mean,
+                    rolling_std,
+                ] + fixed_features,
+                axis=1
+            )
 
             sequences.append(seq_features)
             labels.append(int(future_high))
+            subject_ids.append(str(subject_id).strip())
 
     X = np.array(sequences, dtype=np.float32)
     y = np.array(labels, dtype=np.int64)
+    subject_ids = np.array(subject_ids)
 
     log_message(f"Transformer sequence shape: {X.shape}")
     log_message(f"Transformer label shape: {y.shape}")
+    log_message(f"Number of unique subjects: {len(np.unique(subject_ids))}")
     if len(y) > 0:
         unique, counts = np.unique(y, return_counts=True)
         log_message(f"Label counts: {dict(zip(unique, counts))}")
 
-    return X, y
+    return X, y, subject_ids
 
 
 # Dataset
@@ -257,11 +396,11 @@ class GlucoseDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-# Transformer model
+# Model
 class GlucoseTransformer(nn.Module):
     def __init__(
         self,
-        input_dim=2,
+        input_dim=15,
         d_model=32,
         nhead=4,
         num_layers=2,
@@ -292,18 +431,38 @@ class GlucoseTransformer(nn.Module):
         x = self.input_proj(x)
         x = self.encoder(x)
         x = x[:, -1, :]
-        out = self.classifier(x)
-        return out
+        return self.classifier(x)
 
 
-# Train and evaluate
-def train_transformer_model(X, y, epochs=5, batch_size=64, lr=1e-3):
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y
-    )
+# Train / Evaluate
+def train_transformer_model(
+    X,
+    y,
+    subject_ids,
+    epochs=5,
+    batch_size=64,
+    lr=1e-3,
+    threshold=0.9
+):
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, test_idx = next(gss.split(X, y, groups=subject_ids))
+
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+    subject_train, subject_test = subject_ids[train_idx], subject_ids[test_idx]
+
+    log_message(f"Train samples: {len(train_idx)}")
+    log_message(f"Test samples: {len(test_idx)}")
+    log_message(f"Train subjects: {len(np.unique(subject_train))}")
+    log_message(f"Test subjects: {len(np.unique(subject_test))}")
+    log_message(f"Fixed threshold: {threshold}")
+
+    feature_mean = X_train.mean(axis=(0, 1), keepdims=True)
+    feature_std = X_train.std(axis=(0, 1), keepdims=True)
+    feature_std[feature_std == 0] = 1.0
+
+    X_train = (X_train - feature_mean) / feature_std
+    X_test = (X_test - feature_mean) / feature_std
 
     train_dataset = GlucoseDataset(X_train, y_train)
     test_dataset = GlucoseDataset(X_test, y_test)
@@ -312,7 +471,7 @@ def train_transformer_model(X, y, epochs=5, batch_size=64, lr=1e-3):
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = GlucoseTransformer().to(device)
+    model = GlucoseTransformer(input_dim=X.shape[2]).to(device)
 
     class_counts = np.bincount(y_train)
     class_weights = len(y_train) / (2.0 * class_counts)
@@ -339,13 +498,10 @@ def train_transformer_model(X, y, epochs=5, batch_size=64, lr=1e-3):
 
             total_loss += loss.item()
 
-        avg_loss = total_loss / len(train_loader)
-        log_message(f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}")
+        log_message(f"Epoch {epoch + 1}/{epochs}, Loss: {total_loss / len(train_loader):.4f}")
 
     model.eval()
-    all_preds = []
-    all_true = []
-    all_probs = []
+    all_true, all_probs = [], []
 
     with torch.no_grad():
         for batch_X, batch_y in test_loader:
@@ -353,28 +509,30 @@ def train_transformer_model(X, y, epochs=5, batch_size=64, lr=1e-3):
 
             logits = model(batch_X)
             probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
-            preds = torch.argmax(logits, dim=1).cpu().numpy()
 
             all_probs.extend(probs)
-            all_preds.extend(preds)
             all_true.extend(batch_y.numpy())
 
-    cm = confusion_matrix(all_true, all_preds)
+    all_true = np.array(all_true)
+    all_probs = np.array(all_probs)
+
+    preds = (all_probs >= threshold).astype(int)
+
+    cm = confusion_matrix(all_true, preds)
     tn, fp, fn, tp = cm.ravel()
 
     sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     auroc = roc_auc_score(all_true, all_probs)
     auprc = average_precision_score(all_true, all_probs)
-    report = classification_report(all_true, all_preds, digits=4)
+    report = classification_report(all_true, preds, digits=4)
 
-    log_message("\n===== TRANSFORMER RESULTS =====")
+    log_message("\n===== FINAL RESULTS =====")
+    log_message(f"Threshold: {threshold}")
     log_message("Confusion Matrix:")
     log_message(cm)
-
     log_message("\nClassification Report:")
     log_message(report)
-
     log_message("\nAdditional Metrics:")
     log_message(f"Sensitivity (Recall): {sensitivity:.4f}")
     log_message(f"Specificity: {specificity:.4f}")
@@ -382,11 +540,10 @@ def train_transformer_model(X, y, epochs=5, batch_size=64, lr=1e-3):
     log_message(f"AUPRC: {auprc:.4f}")
 
     with open(METRICS_PATH, "w", encoding="utf-8") as f:
-        f.write("===== TRANSFORMER RESULTS =====\n")
-        f.write("Confusion Matrix:\n")
-        f.write(str(cm) + "\n\n")
-        f.write("Classification Report:\n")
-        f.write(report + "\n")
+        f.write("===== FINAL RESULTS =====\n")
+        f.write(f"Threshold: {threshold}\n")
+        f.write(f"Confusion Matrix:\n{cm}\n\n")
+        f.write(f"Classification Report:\n{report}\n")
         f.write(f"Sensitivity (Recall): {sensitivity:.4f}\n")
         f.write(f"Specificity: {specificity:.4f}\n")
         f.write(f"AUROC: {auroc:.4f}\n")
@@ -397,23 +554,30 @@ def train_transformer_model(X, y, epochs=5, batch_size=64, lr=1e-3):
 
 # Main
 if __name__ == "__main__":
-    # clear old log at the start of each run
+    set_seed(42)
+
     with open(LOG_PATH, "w", encoding="utf-8") as f:
         f.write("Training log\n")
 
     full_redcap_df, master_clarity_df, secondary_cgm_dict = load_excel_files()
 
     clarity_clean_df = clean_master_clarity(master_clarity_df)
+    daily_insulin_clean_df = clean_daily_insulin(full_redcap_df)
+    daily_nutrition_clean_df = clean_daily_nutrition(full_redcap_df)
 
-    validated_pairs_df = filter_validated_pairs(full_redcap_df)
-    validated_pairs_ready_df = build_pair_timestamps(validated_pairs_df)
-    validated_pairs_clean_df = clean_pair_glucose_values(validated_pairs_ready_df)
-
-    X_seq, y_seq = build_transformer_sequences(clarity_clean_df, seq_len=36)
+    X_seq, y_seq, subject_ids = build_transformer_sequences(
+        clarity_clean=clarity_clean_df,
+        daily_insulin_clean=daily_insulin_clean_df,
+        daily_nutrition_clean=daily_nutrition_clean_df,
+        seq_len=36
+    )
 
     transformer_model = train_transformer_model(
-        X_seq, y_seq,
+        X_seq,
+        y_seq,
+        subject_ids,
         epochs=5,
         batch_size=64,
-        lr=1e-3
+        lr=1e-3,
+        threshold=0.9
     )

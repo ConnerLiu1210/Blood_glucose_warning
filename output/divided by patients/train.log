@@ -1,0 +1,44 @@
+Training log
+Loading Excel files...
+Loaded successfully.
+Cleaned Master Clarity shape: (119325, 19)
+High count: 1082
+Cleaned Daily Insulin Dosing shape: (529, 7)
+Cleaned Daily Nutrition shape: (528, 6)
+Building transformer sequences...
+Transformer sequence shape: (117025, 36, 11)
+Transformer label shape: (117025,)
+Number of unique subjects: 100
+Label counts: {np.int64(0): np.int64(116741), np.int64(1): np.int64(284)}
+Train samples: 90405
+Test samples: 26620
+Train subjects: 80
+Test subjects: 20
+Training on device: cpu
+Epoch 1/5, Loss: 0.1583
+Epoch 2/5, Loss: 0.1177
+Epoch 3/5, Loss: 0.1079
+Epoch 4/5, Loss: 0.1125
+Epoch 5/5, Loss: 0.1018
+
+===== TRANSFORMER RESULTS =====
+Confusion Matrix:
+[[26058   525]
+ [    0    37]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     1.0000    0.9803    0.9900     26583
+           1     0.0658    1.0000    0.1235        37
+
+    accuracy                         0.9803     26620
+   macro avg     0.5329    0.9901    0.5568     26620
+weighted avg     0.9987    0.9803    0.9888     26620
+
+
+Additional Metrics:
+Sensitivity (Recall): 1.0000
+Specificity: 0.9803
+AUROC: 0.9967
+AUPRC: 0.2202

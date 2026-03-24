@@ -1,0 +1,89 @@
+===== THRESHOLD SEARCH RESULTS =====
+AUROC: 0.9975
+AUPRC: 0.3576
+
+--- Threshold = 0.50 ---
+Confusion Matrix:
+[[25826   757]
+ [    0    37]]
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     1.0000    0.9715    0.9856     26583
+           1     0.0466    1.0000    0.0890        37
+
+    accuracy                         0.9716     26620
+   macro avg     0.5233    0.9858    0.5373     26620
+weighted avg     0.9987    0.9716    0.9843     26620
+
+Sensitivity (Recall): 1.0000
+Specificity: 0.9715
+
+--- Threshold = 0.60 ---
+Confusion Matrix:
+[[25964   619]
+ [    0    37]]
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     1.0000    0.9767    0.9882     26583
+           1     0.0564    1.0000    0.1068        37
+
+    accuracy                         0.9767     26620
+   macro avg     0.5282    0.9884    0.5475     26620
+weighted avg     0.9987    0.9767    0.9870     26620
+
+Sensitivity (Recall): 1.0000
+Specificity: 0.9767
+
+--- Threshold = 0.70 ---
+Confusion Matrix:
+[[26059   524]
+ [    0    37]]
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     1.0000    0.9803    0.9900     26583
+           1     0.0660    1.0000    0.1237        37
+
+    accuracy                         0.9803     26620
+   macro avg     0.5330    0.9901    0.5569     26620
+weighted avg     0.9987    0.9803    0.9888     26620
+
+Sensitivity (Recall): 1.0000
+Specificity: 0.9803
+
+--- Threshold = 0.80 ---
+Confusion Matrix:
+[[26174   409]
+ [    0    37]]
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     1.0000    0.9846    0.9922     26583
+           1     0.0830    1.0000    0.1532        37
+
+    accuracy                         0.9846     26620
+   macro avg     0.5415    0.9923    0.5727     26620
+weighted avg     0.9987    0.9846    0.9911     26620
+
+Sensitivity (Recall): 1.0000
+Specificity: 0.9846
+
+--- Threshold = 0.90 ---
+Confusion Matrix:
+[[26561    22]
+ [   17    20]]
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     0.9994    0.9992    0.9993     26583
+           1     0.4762    0.5405    0.5063        37
+
+    accuracy                         0.9985     26620
+   macro avg     0.7378    0.7699    0.7528     26620
+weighted avg     0.9986    0.9985    0.9986     26620
+
+Sensitivity (Recall): 0.5405
+Specificity: 0.9992
+

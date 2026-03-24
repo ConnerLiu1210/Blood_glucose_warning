@@ -1,0 +1,43 @@
+Training log
+Loading Excel files...
+Loaded successfully.
+Cleaned Master Clarity shape: (119325, 19)
+High count: 1082
+Validated CGM/POC pairs shape: (1194, 284)
+Timestamp-ready validated pairs shape: (1193, 288)
+Clean pair glucose values shape: (1192, 288)
+CGM range: 54.0 to 376.0
+POC range: 59.0 to 374.0
+Cleaned Daily Insulin Dosing shape: (529, 7)
+Building transformer sequences...
+Transformer sequence shape: (117025, 36, 7)
+Transformer label shape: (117025,)
+Label counts: {np.int64(0): np.int64(116741), np.int64(1): np.int64(284)}
+Training on device: cpu
+Epoch 1/5, Loss: 0.1374
+Epoch 2/5, Loss: 0.1122
+Epoch 3/5, Loss: 0.1058
+Epoch 4/5, Loss: 0.1005
+Epoch 5/5, Loss: 0.1024
+
+===== TRANSFORMER RESULTS =====
+Confusion Matrix:
+[[22962   386]
+ [    6    51]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     0.9997    0.9835    0.9915     23348
+           1     0.1167    0.8947    0.2065        57
+
+    accuracy                         0.9833     23405
+   macro avg     0.5582    0.9391    0.5990     23405
+weighted avg     0.9976    0.9833    0.9896     23405
+
+
+Additional Metrics:
+Sensitivity (Recall): 0.8947
+Specificity: 0.9835
+AUROC: 0.9891
+AUPRC: 0.2573
