@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 import random
+
 import numpy as np
 import pandas as pd
 import torch
@@ -13,8 +14,6 @@ from sklearn.metrics import (
     roc_auc_score,
     average_precision_score,
 )
-
-
 # Paths
 DATA_DIR = Path("data")
 OUTPUT_DIR = Path("output")
@@ -29,16 +28,15 @@ METRICS_PATH = RUN_DIR / "metrics.txt"
 
 FULL_REDCAP_PATH = DATA_DIR / "Full REDCap Data Intervention for Dexcom FINAL.xlsx"
 MASTER_CLARITY_PATH = DATA_DIR / "Master Clarity log 1-101 for Dexcom FINAL.xlsx"
-SECONDARY_CGM_PATH = DATA_DIR / "Final Seconary CGM cohort pull_uncleaned.xlsx"
 
 
-# Helpers
+# Utilities
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     if torch.backends.cudnn.is_available():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
@@ -62,8 +60,8 @@ def safe_numeric(series):
 def make_unique_columns(columns):
     seen = {}
     new_cols = []
-    for col in columns:
-        col = str(col).strip()
+    for col in map(str, columns):
+        col = col.strip()
         if col not in seen:
             seen[col] = 0
             new_cols.append(col)
@@ -79,31 +77,25 @@ def load_excel_files():
 
     full_redcap = pd.read_excel(FULL_REDCAP_PATH)
     master_clarity = pd.read_excel(MASTER_CLARITY_PATH)
-    secondary_cgm = pd.read_excel(SECONDARY_CGM_PATH, sheet_name=None)
 
     full_redcap.columns = make_unique_columns(full_redcap.columns)
     master_clarity.columns = make_unique_columns(master_clarity.columns)
 
     log_message("Loaded successfully.")
-    return full_redcap, master_clarity, secondary_cgm
+    return full_redcap, master_clarity
 
 
-# Clean CGM
+# Cleaning
 def clean_master_clarity(master_clarity):
     df = master_clarity.copy()
 
-    timestamp_col = None
-    for col in df.columns:
-        if "imes" in str(col):
-            timestamp_col = col
-            break
-
+    timestamp_col = next((col for col in df.columns if "imes" in str(col)), None)
     if timestamp_col is None:
         raise ValueError("Could not find timestamp column in Master Clarity.")
 
     df = df.rename(columns={timestamp_col: "Timestamp"})
-
     df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+
     df = df[df["Sub ID"].notna() & df["Timestamp"].notna()].copy()
     df["Sub ID"] = df["Sub ID"].astype(str).str.strip()
 
@@ -123,7 +115,6 @@ def clean_master_clarity(master_clarity):
     return df
 
 
-# Clean insulin
 def clean_daily_insulin(full_redcap):
     df = full_redcap[full_redcap["Repeat Instrument"] == "Daily Insulin Dosing"].copy()
 
@@ -162,7 +153,6 @@ def clean_daily_insulin(full_redcap):
     return df
 
 
-# Clean nutrition
 def clean_daily_nutrition(full_redcap):
     df = full_redcap[full_redcap["Repeat Instrument"] == "Daily Clinical Condition and Use"].copy()
 
@@ -174,11 +164,10 @@ def clean_daily_nutrition(full_redcap):
             "tpn_flag", "tpn_duration"
         ])
 
-    df["Study_ID"] = df["Unique Study ID"].astype(str).str.strip()
-
     if "Date" not in df.columns:
         raise ValueError("Could not find nutrition date column 'Date'.")
 
+    df["Study_ID"] = df["Unique Study ID"].astype(str).str.strip()
     df["Daily_Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
 
     df["enteral_nutrition_flag"] = yes_no_to_flag(df["Was the patient receiving enteral nutrition"])
@@ -203,16 +192,14 @@ def clean_daily_nutrition(full_redcap):
     return df
 
 
-# Lookup daily features
+# Feature lookup
 def get_insulin_features(daily_insulin_clean, subject_id, current_time):
-    current_date = current_time.date()
     df = daily_insulin_clean[
         (daily_insulin_clean["Study_ID"] == str(subject_id).strip()) &
-        (daily_insulin_clean["Daily_Date"] == current_date)
+        (daily_insulin_clean["Daily_Date"] == current_time.date())
     ]
-
     if df.empty:
-        return [0.0, 0.0, 0.0, 0.0, 0.0]
+        return [0.0] * 5
 
     row = df.iloc[0]
     return [
@@ -225,14 +212,12 @@ def get_insulin_features(daily_insulin_clean, subject_id, current_time):
 
 
 def get_nutrition_features(daily_nutrition_clean, subject_id, current_time):
-    current_date = current_time.date()
     df = daily_nutrition_clean[
         (daily_nutrition_clean["Study_ID"] == str(subject_id).strip()) &
-        (daily_nutrition_clean["Daily_Date"] == current_date)
+        (daily_nutrition_clean["Daily_Date"] == current_time.date())
     ]
-
     if df.empty:
-        return [0.0, 0.0, 0.0, 0.0]
+        return [0.0] * 4
 
     row = df.iloc[0]
     return [
@@ -243,21 +228,19 @@ def get_nutrition_features(daily_nutrition_clean, subject_id, current_time):
     ]
 
 
-# Build sequences
+# Sequence building
 def build_transformer_sequences(
     clarity_clean,
     daily_insulin_clean,
     daily_nutrition_clean,
-    seq_len=36
+    seq_len=36,
 ):
     log_message("Building transformer sequences...")
 
     df = clarity_clean[clarity_clean["Event Type"] == "EGV"].copy()
     df = df.sort_values(["Sub ID", "Timestamp"]).reset_index(drop=True)
 
-    sequences = []
-    labels = []
-    subject_ids = []
+    sequences, labels, subject_ids = [], [], []
 
     history_window = pd.Timedelta(hours=3)
     future_window = pd.Timedelta(hours=1)
@@ -270,18 +253,16 @@ def build_transformer_sequences(
                 continue
 
             current_time = group.loc[i, "Timestamp"]
-            history_start = current_time - history_window
-            future_end = current_time + future_window
 
             history_df = group[
-                (group["Timestamp"] >= history_start) &
+                (group["Timestamp"] >= current_time - history_window) &
                 (group["Timestamp"] <= current_time) &
                 (group["Glucose_numeric"].notna())
             ].copy()
 
             future_df = group[
                 (group["Timestamp"] > current_time) &
-                (group["Timestamp"] <= future_end)
+                (group["Timestamp"] <= current_time + future_window)
             ].copy()
 
             if len(history_df) < 6 or len(future_df) < 1:
@@ -292,7 +273,7 @@ def build_transformer_sequences(
                 (future_df["Glucose_numeric"] > 400)
             ).any()
 
-            glucose_seq = history_df["Glucose_numeric"].values.astype(float)
+            glucose_seq = history_df["Glucose_numeric"].values.astype(np.float32)
             time_seq = history_df["Timestamp"]
 
             if len(glucose_seq) > seq_len:
@@ -301,20 +282,18 @@ def build_transformer_sequences(
 
             padded_seq = np.zeros(seq_len, dtype=np.float32)
             time_gap = np.zeros(seq_len, dtype=np.float32)
-
             glucose_delta = np.zeros(seq_len, dtype=np.float32)
             glucose_slope = np.zeros(seq_len, dtype=np.float32)
             rolling_mean = np.zeros(seq_len, dtype=np.float32)
             rolling_std = np.zeros(seq_len, dtype=np.float32)
 
-            padded_seq[-len(glucose_seq):] = glucose_seq.astype(np.float32)
+            padded_seq[-len(glucose_seq):] = glucose_seq
 
             if len(time_seq) > 1:
-                deltas = time_seq.diff().dt.total_seconds().fillna(0).values / 60.0
+                deltas = time_seq.diff().dt.total_seconds().fillna(0).values.astype(np.float32) / 60.0
             else:
                 deltas = np.zeros(len(glucose_seq), dtype=np.float32)
 
-            deltas = np.array(deltas, dtype=np.float32)
             time_gap[-len(glucose_seq):] = deltas
 
             g_delta = np.diff(glucose_seq, prepend=glucose_seq[0]).astype(np.float32)
@@ -322,35 +301,20 @@ def build_transformer_sequences(
 
             safe_gap = deltas.copy()
             safe_gap[safe_gap == 0] = 1.0
-            g_slope = (g_delta / safe_gap).astype(np.float32)
-            glucose_slope[-len(glucose_seq):] = g_slope
+            glucose_slope[-len(glucose_seq):] = (g_delta / safe_gap).astype(np.float32)
 
             g_series = pd.Series(glucose_seq)
-            r_mean = g_series.rolling(window=3, min_periods=1).mean().values.astype(np.float32)
-            r_std = (
-                g_series.rolling(window=3, min_periods=1)
-                .std()
-                .fillna(0)
-                .values
-                .astype(np.float32)
+            rolling_mean[-len(glucose_seq):] = g_series.rolling(3, min_periods=1).mean().values.astype(np.float32)
+            rolling_std[-len(glucose_seq):] = (
+                g_series.rolling(3, min_periods=1).std().fillna(0).values.astype(np.float32)
             )
-
-            rolling_mean[-len(glucose_seq):] = r_mean
-            rolling_std[-len(glucose_seq):] = r_std
 
             insulin = get_insulin_features(daily_insulin_clean, subject_id, current_time)
             nutrition = get_nutrition_features(daily_nutrition_clean, subject_id, current_time)
 
             fixed_features = [
-                np.full(seq_len, insulin[0], dtype=np.float32),
-                np.full(seq_len, insulin[1], dtype=np.float32),
-                np.full(seq_len, insulin[2], dtype=np.float32),
-                np.full(seq_len, insulin[3], dtype=np.float32),
-                np.full(seq_len, insulin[4], dtype=np.float32),
-                np.full(seq_len, nutrition[0], dtype=np.float32),
-                np.full(seq_len, nutrition[1], dtype=np.float32),
-                np.full(seq_len, nutrition[2], dtype=np.float32),
-                np.full(seq_len, nutrition[3], dtype=np.float32),
+                np.full(seq_len, v, dtype=np.float32)
+                for v in insulin + nutrition
             ]
 
             seq_features = np.stack(
@@ -398,15 +362,7 @@ class GlucoseDataset(Dataset):
 
 # Model
 class GlucoseTransformer(nn.Module):
-    def __init__(
-        self,
-        input_dim=15,
-        d_model=32,
-        nhead=4,
-        num_layers=2,
-        dim_feedforward=64,
-        dropout=0.1
-    ):
+    def __init__(self, input_dim, d_model=32, nhead=4, num_layers=2, dim_feedforward=64, dropout=0.1):
         super().__init__()
 
         self.input_proj = nn.Linear(input_dim, d_model)
@@ -416,7 +372,7 @@ class GlucoseTransformer(nn.Module):
             nhead=nhead,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True
+            batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
@@ -424,7 +380,7 @@ class GlucoseTransformer(nn.Module):
             nn.Linear(d_model, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 2)
+            nn.Linear(32, 2),
         )
 
     def forward(self, x):
@@ -435,15 +391,7 @@ class GlucoseTransformer(nn.Module):
 
 
 # Train / Evaluate
-def train_transformer_model(
-    X,
-    y,
-    subject_ids,
-    epochs=5,
-    batch_size=64,
-    lr=1e-3,
-    threshold=0.9
-):
+def train_transformer_model(X, y, subject_ids, epochs=5, batch_size=64, lr=1e-3, threshold=0.9):
     gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     train_idx, test_idx = next(gss.split(X, y, groups=subject_ids))
 
@@ -464,11 +412,8 @@ def train_transformer_model(
     X_train = (X_train - feature_mean) / feature_std
     X_test = (X_test - feature_mean) / feature_std
 
-    train_dataset = GlucoseDataset(X_train, y_train)
-    test_dataset = GlucoseDataset(X_test, y_test)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(GlucoseDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(GlucoseDataset(X_test, y_test), batch_size=batch_size)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = GlucoseTransformer(input_dim=X.shape[2]).to(device)
@@ -487,8 +432,7 @@ def train_transformer_model(
         total_loss = 0.0
 
         for batch_X, batch_y in train_loader:
-            batch_X = batch_X.to(device)
-            batch_y = batch_y.to(device)
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
 
             optimizer.zero_grad()
             logits = model(batch_X)
@@ -505,24 +449,20 @@ def train_transformer_model(
 
     with torch.no_grad():
         for batch_X, batch_y in test_loader:
-            batch_X = batch_X.to(device)
-
-            logits = model(batch_X)
+            logits = model(batch_X.to(device))
             probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
-
             all_probs.extend(probs)
             all_true.extend(batch_y.numpy())
 
     all_true = np.array(all_true)
     all_probs = np.array(all_probs)
-
     preds = (all_probs >= threshold).astype(int)
 
     cm = confusion_matrix(all_true, preds)
     tn, fp, fn, tp = cm.ravel()
 
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    sensitivity = tp / (tp + fn) if (tp + fn) else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) else 0.0
     auroc = roc_auc_score(all_true, all_probs)
     auprc = average_precision_score(all_true, all_probs)
     report = classification_report(all_true, preds, digits=4)
@@ -559,7 +499,7 @@ if __name__ == "__main__":
     with open(LOG_PATH, "w", encoding="utf-8") as f:
         f.write("Training log\n")
 
-    full_redcap_df, master_clarity_df, secondary_cgm_dict = load_excel_files()
+    full_redcap_df, master_clarity_df = load_excel_files()
 
     clarity_clean_df = clean_master_clarity(master_clarity_df)
     daily_insulin_clean_df = clean_daily_insulin(full_redcap_df)
@@ -569,15 +509,15 @@ if __name__ == "__main__":
         clarity_clean=clarity_clean_df,
         daily_insulin_clean=daily_insulin_clean_df,
         daily_nutrition_clean=daily_nutrition_clean_df,
-        seq_len=36
+        seq_len=36,
     )
 
-    transformer_model = train_transformer_model(
+    model = train_transformer_model(
         X_seq,
         y_seq,
         subject_ids,
         epochs=5,
         batch_size=64,
         lr=1e-3,
-        threshold=0.9
+        threshold=0.9,
     )
